@@ -1,5 +1,3 @@
-#!/usr/bin/python
-
 import sys
 import numpy as np
 import pyopencl as cl
@@ -13,6 +11,7 @@ from datetime import datetime
 from jsonrpc import ServiceProxy
 from jsonrpc.proxy import JSONRPCException
 from jsonrpc.json import JSONDecodeException
+
 
 def uint32(x):
 	return x & 0xffffffffL

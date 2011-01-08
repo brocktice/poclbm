@@ -54,10 +54,15 @@ def worker(device, config):
         def sayLine(self, format, args=()):
                 self.say(format, args)
                 
-        def blockFound(self, output):
+        def blockFound(self, hash, accepted):
                 currentBlock = self.bitcoin.getblocknumber()
                 matures = int(currentBlock) + 120
-                message = 'Device['+device+'] found a block with output: '+str(output)+'. Matures at block '+str(matures)+'.'
+                message = 'Device['+device+'] found a block with hash: '+str(hash)
+                if(accepted):
+                        message = message + '. Matures at block '+str(matures)+'.'
+                else:
+                        message = message + '. invalid or stale'
+
                 log.info(message)
                 sendEmail(config, 'Miner found a block', message)
     
