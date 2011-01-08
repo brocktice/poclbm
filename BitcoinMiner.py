@@ -5,140 +5,179 @@ import numpy as np
 import pyopencl as cl
 
 from struct import *
+from Queue import Queue
+from Queue import Empty
+from threading import Thread
 from time import sleep, time
 from datetime import datetime
 from jsonrpc import ServiceProxy
 from jsonrpc.proxy import JSONRPCException
-
+from jsonrpc.json import JSONDecodeException
 
 def uint32(x):
-        return x & 0xffffffffL
+	return x & 0xffffffffL
 
 def rot(x, y):
-        return (x<<y | x>>(32-y))
-        
+	return (x<<y | x>>(32-y))
+	
 def sharound(a,b,c,d,e,f,g,h,x,K):
-        t1=h+(rot(e, 26)^rot(e, 21)^rot(e, 7))+(g^(e&(f^g)))+K+x
-        t2=(rot(a, 30)^rot(a, 19)^rot(a, 10))+((a&b)|(c&(a|b)))
-        return (uint32(d + t1), uint32(t1+t2))
+	t1=h+(rot(e, 26)^rot(e, 21)^rot(e, 7))+(g^(e&(f^g)))+K+x
+	t2=(rot(a, 30)^rot(a, 19)^rot(a, 10))+((a&b)|(c&(a|b)))
+	return (uint32(d + t1), uint32(t1+t2))
 
 def if_else(condition, trueVal, falseVal):
-        if condition:
-                return trueVal
-        else:
-                return falseVal
+	if condition:
+		return trueVal
+	else:
+		return falseVal
 
-class BitcoinMiner:
-        def __init__(self, platform, context, host, user, password, port=8332, frames=60, rate=10, askrate=5, worksize=-1, vectors=False):
-                (defines, self.maxBase, self.rateDivisor) = if_else(vectors, ('-DVECTORS', 0x7fffffff, 500), ('', 0xffffffff, 1000))
+class BitcoinMiner(Thread):
+	def __init__(self, platform, context, host, user, password, port=8332, frames=60, rate=1, askrate=5, worksize=-1, vectors=False):
+		Thread.__init__(self)
+		(defines, self.rateDivisor) = if_else(vectors, ('-DVECTORS', 500), ('', 1000))
 
-                self.context = context
-                self.rate = int(rate)
-                self.askrate = int(askrate)
-                self.worksize = int(worksize)
-                
-                if (platform.name.lower().find('nvidia') != -1):
-                        defines += ' -DNVIDIA'
-                elif (self.context.devices[0].extensions.find('cl_amd_media_ops') != -1):
-                        defines += ' -DBITALIGN'
-                        
-                kernelFile = open('btc_miner.cl', 'r')
-                self.miner = cl.Program(self.context, kernelFile.read()).build(defines)
-                kernelFile.close()
+		self.context = context
+		self.rate = float(rate)
+		self.askrate = max(int(askrate), 1)
+		self.askrate = min(self.askrate, 10)
+		self.worksize = int(worksize)
+		self.frames = max(frames, 1)
 
-                if (self.worksize == -1):
-                        self.worksize = self.miner.search.get_work_group_info(cl.kernel_work_group_info.WORK_GROUP_SIZE, self.context.devices[0])
+		if (self.context.devices[0].extensions.find('cl_amd_media_ops') != -1):
+			defines += ' -DBITALIGN'
+			
+		kernelFile = open('BitcoinMiner.cl', 'r')
+		self.miner = cl.Program(self.context, kernelFile.read()).build(defines)
+		kernelFile.close()
 
-                frame = float(1)/float(frames)
-                window = frame/30
-                self.upper = frame + window
-                self.lower = frame - window
+		if (self.worksize == -1):
+			self.worksize = self.miner.search.get_work_group_info(cl.kernel_work_group_info.WORK_GROUP_SIZE, self.context.devices[0])
 
-                self.unit = self.worksize * 256
-                self.globalThreads = self.unit
+		self.workQueue = Queue()
+		self.resultQueue = Queue()
 
-                self.bitcoin = ServiceProxy('http://%s:%s@%s:%s' % (user, password, host, port))
+		self.bitcoin = ServiceProxy('http://%s:%s@%s:%s' % (user, password, host, port))
 
-        def say(self, format, args=()):
-                sys.stdout.write('\r                                        \r' + format % args)
-                sys.stdout.flush()
+	def say(self, format, args=()):
+		sys.stdout.write('\r                                        \r' + format % args)
+		sys.stdout.flush()
 
-        def sayLine(self, format, args=()):
-                sysWrite(format + '\n', args)
+	def sayLine(self, format, args=()):
+		self.say(format + '\n', args)
 
-        def blockFound(self, output):
-                # designed to be overridden
-                self.sayLine('found: %s, %s', (output, datetime.now().strftime("%d/%m/%Y %H:%M")))
-        
-        def mine(self):
-                work = {}
-                work['data'] = ''
-                output = np.zeros(2, np.uint32)
+	def blockFound(self, hash, accepted):
+		# designed to be overridden
+		self.sayLine('%s, %s, %s', (datetime.now().strftime("%d/%m/%Y %H:%M"), hash, if_else(accepted, 'accepted', 'invalid or stale')))
 
-                queue = cl.CommandQueue(self.context)
-                
-                threadsRun = 0
-                lastRate = time()
+	def getwork(self, data=None):
+		try:
+			if data:
+				return self.bitcoin.getwork(data)
+			else:
+				return self.bitcoin.getwork()
+		except JSONRPCException, e:
+			self.say('%s', e.error['message'])
+		except (JSONDecodeException, IOError):
+			self.say('Problems communicating with bitcoin RPC')
 
-                while True:
-                        try:
-                                work = self.bitcoin.getwork()
-                        except JSONRPCException, e:
-                                self.say('%s', e.error['message'])
-                                sleep(2)
-                                continue
-                        except IOError:
-                                self.say('Unable to communicate with bitcoin RPC')
-                                sleep(2)
-                                continue
-                        
-                        try:
-                                block2 = np.array(unpack('IIIIIIIIIIIIIIII', work['data'][128:].decode('hex')), dtype=np.uint32)
-                                state  = np.array(unpack('IIIIIIII',         work['midstate'].decode('hex')),       dtype=np.uint32)
-                                target = np.array(unpack('IIIIIIII',         work['target'].decode('hex')),      dtype=np.uint32)
-                        except:
-                                sayLine('Wrong data format from RPC!')
-                                sys.exit()
-	
-                        state2 = np.array(state)
-                        (state2[3], state2[7]) = sharound(state2[0],state2[1],state2[2],state2[3],state2[4],state2[5],state2[6],state2[7],block2[0],0x428A2F98)
-                        (state2[2], state2[6]) = sharound(state2[7],state2[0],state2[1],state2[2],state2[3],state2[4],state2[5],state2[6],block2[1],0x71374491)
-                        (state2[1], state2[5]) = sharound(state2[6],state2[7],state2[0],state2[1],state2[2],state2[3],state2[4],state2[5],block2[2],0xB5C0FBCF)
+	def mine(self):
+		self.start()
 
-                        output[0] = base = 0
-                        output_buf = cl.Buffer(self.context, cl.mem_flags.WRITE_ONLY | cl.mem_flags.USE_HOST_PTR, hostbuf=output)
+		lastWork = 0
+		work = result = None
+		try:
+			while True:
+				if not work:
+					work = self.getwork()
 
-                        start = time()
-                        while True:
-                                if (output[0]):
-                                        work['data'] = work['data'][:152] + pack('I', long(output[0])).encode('hex') + work['data'][160:]
-                                        self.blockFound(output[0])
-                                        self.bitcoin.getwork(work['data'])
-                                        break
+				try:
+					result = self.resultQueue.get(True, 1)
+				except Empty:
+					pass
 
-                                if (time() - start > self.askrate or base + self.globalThreads == self.maxBase):
-                                        break
+				if result or (time() - lastWork > self.askrate):
+					self.workQueue.put(work)
+					lastWork = time()
+					work = None
+					if result:
+						accepted = self.getwork(result['data'])
+						if accepted != None:
+							self.blockFound(pack('I', long(result['hash'])).encode('hex'), accepted)
+						result = None
+		except KeyboardInterrupt:
+			self.workQueue.put('stop')
+			print '\nbye'
+			sleep(1.1)
 
-                                base += self.globalThreads
-                                if (base + self.globalThreads > self.maxBase):
-                                        base = self.maxBase - self.globalThreads
+	def run(self):
+		frame = float(1)/float(self.frames)
+		window = frame/30
+		upper = frame + window
+		lower = frame - window
 
-                                kernelStart = time()
-                                self.miner.search(	queue, (self.globalThreads, ), (self.worksize, ),
-						block2[0], block2[1], block2[2],
-						state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
-						state2[1], state2[2], state2[3], state2[5], state2[6], state2[7],
-						target[6], pack('I', base), output_buf)
-                                cl.enqueue_read_buffer(queue, output_buf, output).wait()
-                                kernelTime = time() - kernelStart
-                                threadsRun += self.globalThreads
+		unit = self.worksize * 256
+		globalThreads = unit
+		
+		queue = cl.CommandQueue(self.context)
 
-                                if (kernelTime < self.lower):
-                                        self.globalThreads += self.unit
-                                elif (kernelTime > self.upper and self.globalThreads != self.unit):
-                                        self.globalThreads -= self.unit
+		base = lastRate = threadsRun = lastNTime = 0
+		output = np.zeros(2, np.uint32)
+		output_buf = cl.Buffer(self.context, cl.mem_flags.WRITE_ONLY | cl.mem_flags.USE_HOST_PTR, hostbuf=output)
 
-                                if (time() - lastRate > self.rate):
-                                        self.say('%s khash/s', int((threadsRun / (time() - lastRate)) / self.rateDivisor))
-                                        threadsRun = 0
-                                        lastRate = time()
+		work = None
+		while True:
+			if (not work) or (not self.workQueue.empty()):
+				try:
+					work = self.workQueue.get(True, 1)
+				except Empty:
+					continue
+				else:
+					if not work:
+						continue
+					elif work == 'stop':
+						return
+					try:
+						data   = np.array(unpack('IIIIIIIIIIIIIIII', work['data'][128:].decode('hex')), dtype=np.uint32)
+						state  = np.array(unpack('IIIIIIII',         work['midstate'].decode('hex')),   dtype=np.uint32)
+						target = np.array(unpack('IIIIIIII',         work['target'].decode('hex')),     dtype=np.uint32)
+					except Exception as e:
+						self.sayLine('Wrong data format from RPC!')
+						sys.exit()
+					state2 = np.array(state)
+					(state2[3], state2[7]) = sharound(state2[0],state2[1],state2[2],state2[3],state2[4],state2[5],state2[6],state2[7],data[0],0x428A2F98)
+					(state2[2], state2[6]) = sharound(state2[7],state2[0],state2[1],state2[2],state2[3],state2[4],state2[5],state2[6],data[1],0x71374491)
+					(state2[1], state2[5]) = sharound(state2[6],state2[7],state2[0],state2[1],state2[2],state2[3],state2[4],state2[5],data[2],0xB5C0FBCF)
+
+			kernelStart = time()
+			self.miner.search(	queue, (globalThreads, ), (self.worksize, ),
+								data[0], data[1], data[2],
+								state[0], state[1], state[2], state[3], state[4], state[5], state[6], state[7],
+								state2[1], state2[2], state2[3], state2[5], state2[6], state2[7],
+								target[6], target[7], pack('I', base), output_buf)
+			cl.enqueue_read_buffer(queue, output_buf, output)
+
+			if (time() - lastRate > self.rate):
+				self.say('%s khash/s', int((threadsRun / (time() - lastRate)) / self.rateDivisor))
+				threadsRun = 0
+				lastRate = time()
+
+			queue.finish()
+			kernelTime = time() - kernelStart
+
+			threadsRun += globalThreads
+			base = uint32(base + globalThreads)
+
+			if (kernelTime < lower):
+				globalThreads += unit
+			elif (kernelTime > upper and globalThreads > unit):
+				globalThreads -= unit
+
+			if output[0]:
+				result = {}
+				d = work['data']
+				d = d[:152] + pack('I', long(output[1])).encode('hex') + d[160:]
+				result['data'] = d
+				result['hash'] = output[0]
+				self.resultQueue.put(result)
+				output[0] = 0
+				cl.enqueue_write_buffer(queue, output_buf, output)
