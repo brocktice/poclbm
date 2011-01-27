@@ -52,7 +52,12 @@ def worker(device, config):
                 log.info('Device[%s]: ' % device + format % args)
 
         def sayLine(self, format, args=()):
-                self.say(format, args)
+                if(format == 'verification failed, check hardware!'):
+                        message = 'Device['+device+'] failed verification, check hardware!'
+                        log.info(message)
+                        sendEmail(config, 'Hash verification failed', message)
+                else:
+                        self.say(format, args)
                 
         def blockFound(self, hash, accepted):
                 currentBlock = self.bitcoin.getblocknumber()
