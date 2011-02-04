@@ -39,13 +39,11 @@ def worker(device, config):
     log.debug('Worker starting on device '+device)
     log.debug('Setting DISPLAY variable for device '+device)
     os.environ['DISPLAY'] = ':0.'+device
-    #os.environ['DISPLAY'] = ':0'
     log.debug('Confirming environment: '+os.environ['DISPLAY'])
     log.debug('Checking that device is found now that DISPLAY is set')
 
     platform = cl.get_platforms()[0]
     devices = platform.get_devices()
-    context = cl.Context([devices[1]], None, None)
 
     class customMiner(BitcoinMiner):
         def say(self, format, args=()):
@@ -71,7 +69,7 @@ def worker(device, config):
                 log.info(message)
                 sendEmail(config, 'Miner found a block', message)
     
-    myMiner = customMiner(platform, context, config['hostname'], config['user'], config['password'], config['port'], config['frames'], config['rate'], config['askrate'], config['worksize'], config['vectors'])
+    myMiner = customMiner(platform,devices[1], config['hostname'], config['user'], config['password'], config['port'], config['frames'], config['rate'], config['askrate'], config['worksize'], config['vectors'])
                                                                                                        
     myMiner.mine()
     # END WORKER
