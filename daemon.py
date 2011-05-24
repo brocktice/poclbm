@@ -69,7 +69,7 @@ def worker(device, config):
                 log.info(message)
                 sendEmail(config, 'Miner found a block', message)
     
-    myMiner = customMiner(platform,devices[1], config['hostname'], config['user'], config['password'], config['port'], config['frames'], config['rate'], config['askrate'], config['worksize'], config['vectors'])
+    myMiner = customMiner(devices[1], config['hostname'], config['user'], config['password'], config['port'], config['frames'], config['rate'], config['askrate'], config['worksize'], config['vectors'])
                                                                                                        
     myMiner.mine()
     # END WORKER
