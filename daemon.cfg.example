@@ -1,0 +1,14 @@
+devices = 0,1
+servers = "username:password@host0:port,username:password@host1:port"
+logfile = daemon
+frames = 1
+askrate = 5
+rate = 10
+worksize = 64
+vectors = True
+emailFrom = 'user@domain.com'
+emailTo = 'user2@domain.com'
+frameSleep = 0
+verbose = False
+estimate = 900
+tolerance = 2

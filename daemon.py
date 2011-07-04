@@ -17,6 +17,9 @@ from datetime import datetime
 
 from BitcoinMiner import *
 
+class Blank:
+	def __init__(self): pass
+
 def if_else(condition, trueVal, falseVal):
 	if condition:
 		return trueVal
@@ -26,8 +29,8 @@ def if_else(condition, trueVal, falseVal):
 def sendEmail(config, subject, message):
         msg = MIMEText(message)
         msg['Subject'] = subject
-        msg['From'] = config['emailFrom']
-        msg['To'] = config['emailTo']
+        msg['From'] = config.emailFrom
+        msg['To'] = config.emailTo
 
         s = smtplib.SMTP('localhost')
         s.sendmail(msg['From'], [msg['To']], msg.as_string())
@@ -38,7 +41,7 @@ def sendEmail(config, subject, message):
 def worker(device, config):
     log.debug('Worker starting on device '+device)
     log.debug('Setting DISPLAY variable for device '+device)
-    os.environ['DISPLAY'] = ':0.'+device
+    os.environ['DISPLAY'] = ':0'
     log.debug('Confirming environment: '+os.environ['DISPLAY'])
     log.debug('Checking that device is found now that DISPLAY is set')
 
@@ -46,30 +49,36 @@ def worker(device, config):
     devices = platform.get_devices()
 
     class customMiner(BitcoinMiner):
-        def say(self, format, args=()):
-                log.info('Device[%s]: ' % device + format % args)
+	    def say(self, format, args=()):
+		    log.info('Device[%s]: ' % device + format % args)
+	    
+	    def sayLine(self, format, args=()):
+		    if(format == 'verification failed, check hardware!'):
+			    message = 'Device['+device+'] failed verification, check hardware!'
+			    log.info(message)
+			    sendEmail(config, 'Hash verification failed', message)
+		    else:
+			    self.say(format, args)
+	    
+#	    def blockFound(self, hash, accepted):
+	            #currentBlock = self.bitcoin.getblocknumber()
+	            #matures = int(currentBlock) + 120
+#	            message = 'Device['+device+'] found a block with hash: '+str(hash)
+#	            if(accepted):
+#	                    message = message + '. Matures at block '+str(matures)+'.'
+#	            else:
+#	                    message = message + '. invalid or stale'
+	    
+#	            log.info(message)
+#	            sendEmail(config, 'Miner found a block', message)
 
-        def sayLine(self, format, args=()):
-                if(format == 'verification failed, check hardware!'):
-                        message = 'Device['+device+'] failed verification, check hardware!'
-                        log.info(message)
-                        sendEmail(config, 'Hash verification failed', message)
-                else:
-                        self.say(format, args)
-                
-        def blockFound(self, hash, accepted):
-                currentBlock = self.bitcoin.getblocknumber()
-                matures = int(currentBlock) + 120
-                message = 'Device['+device+'] found a block with hash: '+str(hash)
-                if(accepted):
-                        message = message + '. Matures at block '+str(matures)+'.'
-                else:
-                        message = message + '. invalid or stale'
-
-                log.info(message)
-                sendEmail(config, 'Miner found a block', message)
-    
-    myMiner = customMiner(devices[1], config['hostname'], config['user'], config['password'], config['port'], config['frames'], config['rate'], config['askrate'], config['worksize'], config['vectors'])
+    #convert to format required by BitcoinMiner.py
+    confobj = Blank()
+	    
+    for key in config.keys():
+	    confobj.__dict__[key] = config[key]
+		    
+    myMiner = customMiner(devices[int(device)], confobj)
                                                                                                        
     myMiner.mine()
     # END WORKER
@@ -85,10 +94,22 @@ os.symlink(logfile, 'last.log')
 config['frames'] = int(max(int(config['frames']), 1.1))
 config['askrate'] = int(max(int(config['askrate']), 1))
 config['askrate'] = int(min(int(config['askrate']), 30))
+config['frameSleep'] = float(config['frameSleep'])
+
 if config['vectors'] == '0':
         config['vectors'] = False
 else:
         config ['vectors'] = True
+
+if config['verbose'] == '0':
+	config['verbose'] = False
+else:
+	config['verbose'] = True
+
+config['worksize'] = int(config['worksize'])
+config['rate'] = int(config['rate'])
+config['estimate'] = int(config['estimate'])
+config['tolerance'] = int(config['tolerance'])
 
 if __name__ == "__main__":
     processes = []
